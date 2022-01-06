@@ -301,7 +301,6 @@ func (s *Session) measureRTT() {
 		return
 	}
 	atomic.StoreInt64(&s.rtt, rtt.Nanoseconds())
-	time.AfterFunc(10*time.Second, s.measureRTT)
 }
 
 // 0 if we don't yet have a measurement
@@ -382,7 +381,8 @@ func (s *Session) startKeepalive() {
 		s.keepaliveActive = true
 		s.keepaliveLock.Unlock()
 
-		_, err := s.Ping()
+		rtt, err := s.Ping()
+		atomic.StoreInt64(&s.rtt, rtt.Nanoseconds())
 
 		s.keepaliveLock.Lock()
 		s.keepaliveActive = false
