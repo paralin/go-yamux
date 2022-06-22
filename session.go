@@ -61,7 +61,7 @@ type Session struct {
 	logger *log.Logger
 
 	// conn is the underlying connection
-	conn net.Conn
+	conn io.ReadWriteCloser
 
 	// reader is a buffered reader
 	reader io.Reader
@@ -121,7 +121,7 @@ type Session struct {
 }
 
 // newSession is used to construct a new session
-func newSession(config *Config, conn net.Conn, client bool, readBuf int, memoryManager MemoryManager) *Session {
+func newSession(config *Config, conn io.ReadWriteCloser, client bool, readBuf int, memoryManager MemoryManager) *Session {
 	var reader io.Reader = conn
 	if readBuf > 0 {
 		reader = bufio.NewReaderSize(reader, readBuf)
@@ -500,40 +500,7 @@ func (s *Session) sendLoop() (err error) {
 
 	defer close(s.sendDoneCh)
 
-	// Extend the write deadline if we've passed the halfway point. This can
-	// be expensive so this ensures we only have to do this once every
-	// ConnectionWriteTimeout/2 (usually 5s).
-	var lastWriteDeadline time.Time
-	extendWriteDeadline := func() error {
-		now := time.Now()
-		// If over half of the deadline has elapsed, extend it.
-		if now.Add(s.config.ConnectionWriteTimeout / 2).After(lastWriteDeadline) {
-			lastWriteDeadline = now.Add(s.config.ConnectionWriteTimeout)
-			return s.conn.SetWriteDeadline(lastWriteDeadline)
-		}
-		return nil
-	}
-
 	writer := s.conn
-
-	// FIXME: https://github.com/libp2p/go-libp2p/issues/644
-	// Write coalescing is disabled for now.
-
-	// writer := pool.Writer{W: s.conn}
-
-	// var writeTimeout *time.Timer
-	// var writeTimeoutCh <-chan time.Time
-	// if s.config.WriteCoalesceDelay > 0 {
-	//	writeTimeout = time.NewTimer(s.config.WriteCoalesceDelay)
-	//	defer writeTimeout.Stop()
-
-	//	writeTimeoutCh = writeTimeout.C
-	// } else {
-	//	ch := make(chan time.Time)
-	//	close(ch)
-	//	writeTimeoutCh = ch
-	// }
-
 	for {
 		// yield after processing the last message, if we've shutdown.
 		// s.sendCh is a buffered channel and Go doesn't guarantee select order.
@@ -568,45 +535,17 @@ func (s *Session) sendLoop() (err error) {
 				copy(buf, hdr[:])
 			case <-s.shutdownCh:
 				return nil
-				// default:
-				//	select {
-				//	case buf = <-s.sendCh:
-				//	case <-s.shutdownCh:
-				//		return nil
-				//	case <-writeTimeoutCh:
-				//		if err := writer.Flush(); err != nil {
-				//			if os.IsTimeout(err) {
-				//				err = ErrConnectionWriteTimeout
-				//			}
-				//			return err
-				//		}
-
-				//		select {
-				//		case buf = <-s.sendCh:
-				//		case <-s.shutdownCh:
-				//			return nil
-				//		}
-
-				//		if writeTimeout != nil {
-				//			writeTimeout.Reset(s.config.WriteCoalesceDelay)
-				//		}
-				//	}
 			}
-		}
 
-		if err := extendWriteDeadline(); err != nil {
+			_, err := writer.Write(buf)
 			pool.Put(buf)
-			return err
-		}
 
-		_, err := writer.Write(buf)
-		pool.Put(buf)
-
-		if err != nil {
-			if os.IsTimeout(err) {
-				err = ErrConnectionWriteTimeout
+			if err != nil {
+				if os.IsTimeout(err) {
+					err = ErrConnectionWriteTimeout
+				}
+				return err
 			}
-			return err
 		}
 	}
 }
